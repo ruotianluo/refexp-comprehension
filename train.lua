@@ -51,6 +51,8 @@ function build_crit(opt)
     return SturctureCriterion(opt)
   elseif opt.loss_type == 'softmax' then
     return SoftmaxCriterion()
+  elseif opt.loss_type == 'softmax2' then
+    return Softmax2Criterion()
   elseif opt.loss_type == 'logistic' then
     return LogisticCriterion()
   elseif opt.loss_type == 'hinge' then

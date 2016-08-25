@@ -162,6 +162,7 @@ function hinge_crit:updateGradInput(input, seq)
   return self.gradInput
 end
 
+-- weighted
 local softmax_crit, parent = torch.class('SoftmaxCriterion', 'nn.Criterion')
 function softmax_crit:__init()
   self.log_softmax =  nn.LogSoftMax()
@@ -178,6 +179,26 @@ end
 
 function softmax_crit:updateGradInput(input, iou)
   local weight = torch.cmul(iou, torch.gt(iou,0.5):typeAs(iou))
+  self.gradInput = self.log_softmax:backward(input, - weight)
+  return self.gradInput
+end
+
+local softmax2_crit, parent = torch.class('Softmax2Criterion', 'nn.Criterion')
+function softmax2_crit:__init()
+  self.log_softmax =  nn.LogSoftMax()
+  parent.__init(self)
+end
+
+function softmax2_crit:updateOutput(input, iou)
+  local log_prob = self.log_softmax:forward(input)
+  local weight = torch.gt(iou,0.5):typeAs(iou)
+  local output = - torch.sum(torch.cmul(log_prob, weight))
+  self.gradInput = self.log_softmax:backward(input, - weight)
+  return output
+end
+
+function softmax2_crit:updateGradInput(input, iou)
+  local weight = torch.gt(iou,0.5):typeAs(iou)
   self.gradInput = self.log_softmax:backward(input, - weight)
   return self.gradInput
 end
