@@ -46,20 +46,25 @@ local epoch = 1
 local optim_state = {}
 local best_val_score
 
+function build_crit(opt)
+  if opt.loss_type == 'structure' then
+    return SturctureCriterion(opt)
+  elseif opt.loss_type == 'softmax' then
+    return SoftmaxCriterion()
+  elseif opt.loss_type == 'logistic' then
+    return LogisticCriterion()
+  elseif opt.loss_type == 'hinge' then
+    return HingeCriterion(opt)
+  end
+end
+
 if string.len(opt.checkpoint_start_from) > 0 then
   -- load protos from file
   print('initializing training information from ' .. opt.checkpoint_start_from)
   local loaded_checkpoint = torch.load(opt.checkpoint_start_from)
   protos = loaded_checkpoint.protos
-
-  if opt.loss_type == 'structure' then
-    protos.crit = SturctureCriterion(opt)
-  elseif opt.loss_type == 'softmax' then
-    protos.crit = SoftmaxCriterion(opt)
-  elseif opt.loss_type == 'logistic' then
-    protos.crit = LogisticCriterion(opt)
-  end
-
+  protos.crit = build_crit(opt)
+  
   iter = loaded_checkpoint.iter + 1 or iter
   loss_history = loaded_checkpoint.loss_history or loss_history
   lr_history = loaded_checkpoint.lr_history or lr_history
@@ -74,14 +79,7 @@ else
   -- intialize language model
   protos = {}
   protos.net = SimNet(opt)
-  
-  if opt.loss_type == 'structure' then
-    protos.crit = SturctureCriterion(opt)
-  elseif opt.loss_type == 'softmax' then
-    protos.crit = SoftmaxCriterion(opt)
-  elseif opt.loss_type == 'logistic' then
-    protos.crit = LogisticCriterion(opt)
-  end
+  protos.crit = build_crit(opt)
 end
 
 if opt.gpuid >= 0 then
