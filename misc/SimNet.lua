@@ -20,17 +20,20 @@ function SimNet:__init(opt)
   self.vis_net = nn.Sequential():add(nn.ParallelTable())
   self.vis_net:get(1):add(nn.Sequential()
     :add(nn.Linear(4096, self.image_l1_size))
-    :add(nn.ReLU())
-    :add(nn.BatchNormalization(self.image_l1_size)))
+    :add(nn.ReLU()))
+    --:add(nn.BatchNormalization(self.image_l1_size)))
   self.vis_net:get(1):add(
     nn.Sequential():add(nn.Linear(4096, self.image_l1_size))
       :add(nn.ReLU())
-      :add(nn.BatchNormalization(self.image_l1_size))
+      --:add(nn.BatchNormalization(self.image_l1_size))
       :add(nn.Replicate(101))
       :add(nn.Squeeze()))
   self.vis_net:get(1):add(nn.BatchNormalization(8))
   self.vis_net:add(nn.JoinTable(1,1))
-  self.vis_net:add(nn.Linear(self.image_l1_size*2+8,self.image_l2_size)):add(nn.ReLU()):add(nn.BatchNormalization(self.image_l2_size))
+  self.vis_net
+    :add(nn.Linear(self.image_l1_size*2+8,self.image_l2_size))
+    :add(nn.ReLU())
+    :add(nn.BatchNormalization(self.image_l2_size))
 
   self.language_net = nn.Sequential():add(nn.ParallelTable())
   self.language_net:get(1):add(nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))):add(nn.Identity())
@@ -48,6 +51,17 @@ function SimNet:__init(opt)
   self.net:get(1):add(self.vis_net):add(self.language_net)
 
   self.net:add(self.sim_net)
+end
+
+function SimNet:training()
+  parent.training(self)
+  self.net:training()
+end
+
+
+function SimNet:evaluate()
+  parent.evaluate(self)
+  self.net:evaluate()
 end
 
 function SimNet:parameters()
@@ -95,11 +109,13 @@ function SimNet:_build_sim_net()
 end
 
 function SimNet:updateOutput(inputs)
-  return self.net:forward(inputs)
+  self.output = self.net:forward(inputs)
+  return self.output
 end
 
 function SimNet:updateGradInput(inputs, gradOutput)
-  return self.net:backward(inputs, gradOutput)
+  self.gradInput = self.net:backward(inputs, gradOutput)
+  return self.gradInput
 end
 
 local struc_crit, parent = torch.class('SturctureCriterion', 'nn.Criterion')
@@ -214,12 +230,12 @@ end
 function logistic_crit:updateOutput(input, iou)
   self.scores = self.sigmoid:forward(input)
   self.labels = torch.gt(iou, 0.5):typeAs(input)
-  output = self.bce_crit:forward(self.scores, self.labels)
+  local output = self.bce_crit:forward(self.scores, self.labels)
   return output
 end
 
 function logistic_crit:updateGradInput(input, iou)
-  dscores = self.bce_crit:backward(self.scores, self.labels)
+  local dscores = self.bce_crit:backward(self.scores, self.labels)
   self.gradInput = self.sigmoid:backward(input, dscores)
   return self.gradInput
 end

@@ -84,6 +84,24 @@ function BiDynamicRNN:__init(cell_fw, cell_bw, time_major)
   self.brnn = brnn
 end
 
+function BiDynamicRNN:training()
+  parent.training(self)
+  self.brnn:training()
+end
+
+function BiDynamicRNN:evaluate()
+  parent.evaluate(self)
+  self.brnn:evaluate()
+end
+
+function BiDynamicRNN:clearState()
+  self.brnn:clearState()
+end
+
+function BiDynamicRNN:parameters()
+  return self.brnn:parameters()
+end
+
 function BiDynamicRNN:updateOutput(inputs)
 --[[
 inputs: a table; inputs[1] is batch_size * max_length * size or max_length * batch_size * size
