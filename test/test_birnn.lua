@@ -15,7 +15,7 @@ maxIter = 100
 
 sharedLookupTable = nn.LookupTableMaskZero(nIndex, hiddenSize)
 
-brnn = BiDynamicRNN(nn.FastLSTM(hiddenSize, hiddenSize), nn.FastLSTM(hiddenSize, hiddenSize), true)
+brnn = BiDynamicRNN(nn.FastLSTM(hiddenSize, hiddenSize), nn.FastLSTM(hiddenSize, hiddenSize), true, 'avg')
 
 parallel = nn.ParallelTable()
 parallel:add(nn.Sequencer(sharedLookupTable)):add(nn.Identity())
@@ -66,24 +66,4 @@ local loss = crit:forward(output, gt)
 local gradOutput = crit:backward(output, gt)
 local gradInput, dummy = unpack(net:backward({inputs, seq_length}, gradOutput))
 
--- create a loss function wrapper
-local function f(x)
-  local output = net:forward{x, seq_length}
-  local loss = crit:forward(output, )
-  return loss
-end
-
-  local gradInput_num = gradcheck.numeric_gradient(f, imgs, 1, 1e-6)
-
-  -- print(gradInput)
-  -- print(gradInput_num)
-  -- local g = gradInput:view(-1)
-  -- local gn = gradInput_num:view(-1)
-  -- for i=1,g:nElement() do
-  --   local r = gradcheck.relative_error(g[i],gn[i])
-  --   print(i, g[i], gn[i], r)
-  -- end
-
-  tester:assertTensorEq(gradInput, gradInput_num, 1e-4)
-  tester:assertlt(gradcheck.relative_error(gradInput, gradInput_num, 1e-8), 5e-4)
 

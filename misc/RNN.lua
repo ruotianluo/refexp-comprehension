@@ -3,7 +3,7 @@ require 'rnn'
 
 local BiDynamicRNN, parent = torch.class('BiDynamicRNN', 'nn.Module')
 
-function BiDynamicRNN:__init(cell_fw, cell_bw, time_major)
+function BiDynamicRNN:__init(cell_fw, cell_bw, time_major, state_type)
 --[[
 """Creates a dynamic version of bidirectional recurrent neural network.
   Similar to the unidirectional case above (rnn) but takes input and builds
@@ -50,6 +50,7 @@ function BiDynamicRNN:__init(cell_fw, cell_bw, time_major)
 ]]--
 	-- forward rnn
   self.time_major = time_major or false
+  self.state_type = state_type or 'final'
 
   local fwd = nn.Sequential()
     --:add(nn.SplitTable(1))
@@ -117,6 +118,14 @@ inputs[2] is sequence length, including the length of each sequence
   end
 
   local batch_size = self.rnn_inputs:size(2)
+
+  -- Ensure the feature out of the sequence length are zero
+  for i = 1, batch_size do
+    if sequence_length[i]+1 < max_length then
+      self.rnn_inputs[{{sequence_length[i]+1, max_length}, i}]:zero()
+    end
+  end
+
   -- Generate the inversenet
   self.rnn_inputs_rev = self.rnn_inputs.new(#self.rnn_inputs):zero()
   for i = 1, batch_size do
@@ -125,9 +134,15 @@ inputs[2] is sequence length, including the length of each sequence
     end
   end
   local outputs = self.brnn:forward({self.rnn_inputs, self.rnn_inputs_rev})
-  local output_states = self.rnn_inputs.new(outputs[1]:size())
-  for i = 1, batch_size do
-    output_states[i]:copy(outputs[sequence_length[i]][i])
+  local output_states
+  if self.state_type == 'final' then
+    output_states = self.rnn_inputs.new(outputs[1]:size())
+    for i = 1, batch_size do
+      output_states[i]:copy(outputs[sequence_length[i]][i])
+    end
+  else
+    output_states = torch.sum(outputs, 1):squeeze(1)
+    output_states:cdiv(sequence_length:typeAs(output_states):view(-1, 1):expandAs(output_states))
   end
   self.output = output_states
   return self.output
@@ -137,14 +152,20 @@ function BiDynamicRNN:updateGradInput(inputs, gradOutput)
   local sequence_length = inputs[2]
   local batch_size = self.rnn_inputs:size(2)
 
-  self.gradInput = {inputs[1].new(#inputs[1]):zero(),{}}
+  self.gradInput = {inputs[1].new(#inputs[1]):zero(), {}}
 
   local max_length = torch.max(sequence_length)
 
   local output_feat_size = gradOutput:size(2)
-  local brnn_grad_output = gradOutput.new(max_length, batch_size, output_feat_size):zero()
-  for i = 1, batch_size do
-    brnn_grad_output[sequence_length[i]][i]:copy(gradOutput[i])
+  local brnn_grad_output
+  if self.state_type == 'final' then
+    brnn_grad_output = gradOutput.new(max_length, batch_size, output_feat_size):zero()
+    for i = 1, batch_size do
+      brnn_grad_output[sequence_length[i]][i]:copy(gradOutput[i])
+    end
+  else
+    brnn_grad_output = torch.cdiv(gradOutput, sequence_length:typeAs(gradOutput):view(-1, 1):expandAs(gradOutput))
+    brnn_grad_output = brnn_grad_output:view(1, batch_size, output_feat_size):expand(max_length, batch_size, output_feat_size)
   end
   local brnn_grad_input = self.brnn:backward({self.rnn_inputs, self.rnn_inputs_rev}, brnn_grad_output)
 

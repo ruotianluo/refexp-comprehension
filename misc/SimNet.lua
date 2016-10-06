@@ -1,6 +1,7 @@
 require 'misc.RNN'
 require 'nn'
 require 'rnn'
+require 'cbp'
 require 'nngraph'
 
 nn.FastLSTM.usenngraph = true
@@ -27,7 +28,8 @@ function SimNet:__init(opt)
       :add(nn.ReLU())
       --:add(nn.BatchNormalization(self.image_l1_size))
       :add(nn.Replicate(101))
-      :add(nn.Squeeze()))
+      :add(nn.Squeeze(2)))
+
   self.vis_net:get(1):add(nn.BatchNormalization(8))
   self.vis_net:add(nn.JoinTable(1,1))
   self.vis_net
@@ -37,7 +39,7 @@ function SimNet:__init(opt)
 
   self.language_net = nn.Sequential():add(nn.ParallelTable())
   self.language_net:get(1):add(nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))):add(nn.Identity())
-  self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size)))
+  self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
   -- self.language_net:add(nn.BatchNormalization(self.rnn_size * 2))
 
   if opt.normalize == 1 then
@@ -53,11 +55,16 @@ function SimNet:__init(opt)
   self.net:add(self.sim_net)
 end
 
+function SimNet:setBatchSize(batch_size)
+  for k, v in pairs(self.net:findModules('nn.Replicate')) do
+    v.nfeatures = batch_size
+  end
+end
+
 function SimNet:training()
   parent.training(self)
   self.net:training()
 end
-
 
 function SimNet:evaluate()
   parent.evaluate(self)
@@ -70,6 +77,7 @@ end
 
 function SimNet:clearState()
   self.net:clearState()
+  return parent.clearState(self)
 end
 
 function SimNet:_build_sim_net()
@@ -78,7 +86,8 @@ function SimNet:_build_sim_net()
     local inputs = {}
     table.insert(inputs, nn.Identity()())
     table.insert(inputs, nn.Identity()())
-    local score = nn.Squeeze()(nn.MM(false, true)(inputs))
+    local score = nn.Squeeze(2)(nn.MM(false, true)(inputs))
+    score = nn.Squeeze()(score)
     return nn.gModule(inputs, {score})
   elseif self.score_type == 'concat' then
     local inputs = {}
@@ -86,22 +95,39 @@ function SimNet:_build_sim_net()
     table.insert(inputs, nn.Identity()())
     local vis_feat = inputs[1]
     local text_feat = inputs[2]
-    text_feat = nn.Squeeze()(nn.Replicate(101)(text_feat))
-    feat = nn.JoinTable(1,1)({vis_feat, text_feat})
-    local score = nn.Linear(self.image_l2_size+self.rnn_size*2, 1)(feat)
-    score = nn.Squeeze()(nn.Tanh()(score))
-    return nn.gModule(inputs, {score})
-  elseif self.score_type == 'euclidean' or self.score_type == 'cosine' then
+    vis_feat = nn.Linear(self.image_l2_size, self.rnn_size*2)(vis_feat)
+    text_feat = nn.Linear(self.rnn_size*2, self.rnn_size*2)(text_feat)
+    text_feat = nn.Squeeze(1,2)(nn.Replicate(101)(text_feat))
+    local feat = nn.ReLU()(nn.CAddTable()({vis_feat, text_feat}))
+    local score = nn.Squeeze(2)(nn.Linear(self.rnn_size*2, 1)(feat))
+    score = nn.Squeeze()(score)
+    return nn.gModule(inputs, {score})  
+  elseif self.score_type == 'euclidean' or self.score_type == 'cosine' or self.score_type == 'cbp' or self.score_type == 'ord_embed' then
     local inputs = {}
     table.insert(inputs, nn.Identity()())
     table.insert(inputs, nn.Identity()())
     local vis_feat = inputs[1]
     local text_feat = inputs[2]
     text_feat = nn.Squeeze()(nn.Replicate(101)(text_feat))
+    local score
     if self.score_type == 'euclidean' then
       score = nn.MulConstant(-1)(nn.PairwiseDistance(2)({vis_feat, text_feat}))
-    else
+    elseif self.score_type == 'cosine' then
       score = nn.CosineDistance()({vis_feat, text_feat})
+    elseif self.score_type == 'cbp' then
+      local score_net = nn.Sequential()
+      score_net:add(nn.CompactBilinearPooling(self.image_l2_size))
+        :add(nn.SignedSquareRoot())
+        :add(nn.Normalize(2))
+        :add(nn.Linear(self.image_l2_size, 1))
+      score = score_net({vis_feat, text_feat})
+    elseif self.score_type == 'ord_embed' then
+      text_feat = nn.Normalize(2)(nn.Abs()(text_feat))
+      vis_feat = nn.Normalize(2)(nn.Abs()(vis_feat))
+      score = nn.CSubTable()({text_feat,vis_feat})
+      score = nn.ReLU()(score)
+      score = nn.Square()(score)
+      score = nn.Sum(1,1)(score)
     end
     score = nn.Squeeze()(score)
     return nn.gModule(inputs, {score})
@@ -109,6 +135,7 @@ function SimNet:_build_sim_net()
 end
 
 function SimNet:updateOutput(inputs)
+  self:setBatchSize(inputs[1][1]:size(1))
   self.output = self.net:forward(inputs)
   return self.output
 end
@@ -146,6 +173,10 @@ function struc_crit:updateOutput(input, iou)
   return output
 end
 
+function struc_crit:updateGradInput(input, iou)
+  return self.gradInput
+end
+
 local hinge_crit, parent = torch.class('HingeCriterion', 'nn.Criterion')
 function hinge_crit:__init(opt)
   self.margin = opt.margin
@@ -174,7 +205,7 @@ function hinge_crit:updateOutput(input, iou)
   end
 end
 
-function hinge_crit:updateGradInput(input, seq)
+function hinge_crit:updateGradInput(input, iou)
   return self.gradInput
 end
 
