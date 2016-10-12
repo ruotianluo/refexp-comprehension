@@ -10,6 +10,7 @@ require 'nngraph'
 require 'misc.optim_updates'
 require 'nn'
 require 'misc.SimNet'
+require 'misc.Reader'
 
 local DataLoader = require 'dataloader'
 local utils = require 'misc.utils'
@@ -80,7 +81,11 @@ else
   -- create protos from scratch
   -- intialize language model
   protos = {}
-  protos.net = SimNet(opt)
+  if opt.simnet_type == 'simnet' then
+    protos.net = SimNet(opt)
+  else
+    protos.net = Reader(opt)
+  end
   protos.crit = build_crit(opt)
 end
 
