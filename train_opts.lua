@@ -20,10 +20,13 @@ function M.parse(arg)
   cmd:option('-image_l2_size',1024,'the encoding size of each token in the vocabulary, and the image.')
   cmd:option('-score_type','dot','dot, concat, euclidean, cosine, cbp')
   cmd:option('-loss_type','structure','structure, softmax, softmax2, logsitic, hinge.')
+  cmd:option('-visnet_type','old','rt, lc, old.')
   cmd:option('-state_type', 'final', 'avg, final')
+  cmd:option('-drop_prob_vis', 0., 'strength of dropout in the visnet')
   cmd:option('-slack_rescaled',0,'Rescaled slack or not.')
   cmd:option('-normalize',0,'Normalize the feature or not.')
   cmd:option('-margin',1,'The margin of hinge loss.')
+
 
   -- Optimization: General
   cmd:option('-max_iters', -1, 'max number of iterations to run for (-1 = run forever)')

@@ -2,6 +2,7 @@ require 'misc.RNN'
 require 'nn'
 require 'rnn'
 require 'cbp'
+local net_utils = require 'misc.net_utils'
 require 'nngraph'
 
 nn.FastLSTM.usenngraph = true
@@ -18,7 +19,7 @@ function SimNet:__init(opt)
 
   self.net = nn.Sequential()
 
-  self.vis_net = nn.Sequential():add(nn.ParallelTable())
+  --[[self.vis_net = nn.Sequential():add(nn.ParallelTable())
   self.vis_net:get(1):add(nn.Sequential()
     :add(nn.Linear(4096, self.image_l1_size))
     :add(nn.ReLU()))
@@ -29,13 +30,21 @@ function SimNet:__init(opt)
       --:add(nn.BatchNormalization(self.image_l1_size))
       :add(nn.Replicate(101))
       :add(nn.Squeeze(2)))
-
+  
   self.vis_net:get(1):add(nn.BatchNormalization(8))
   self.vis_net:add(nn.JoinTable(1,1))
   self.vis_net
     :add(nn.Linear(self.image_l1_size*2+8,self.image_l2_size))
     :add(nn.ReLU())
     :add(nn.BatchNormalization(self.image_l2_size))
+  ]]--
+  if opt.visnet_type == 'rt' then
+    self.vis_net = net_utils.build_visnet_rt(opt)
+  elseif opt.visnet_type == 'lc' then
+    self.vis_net = net_utils.build_visnet_lc(opt)
+  elseif opt.visnet_type == 'old' then
+    self.vis_net = net_utils.build_visnet_old(opt)  
+  end
 
   self.language_net = nn.Sequential():add(nn.ParallelTable())
   self.language_net:get(1):add(nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))):add(nn.Identity())
