@@ -193,4 +193,3 @@ function BiDynamicRNN:clearState()
   self.brnn:clearState()
   return parent.clearState(self)
 end
-
