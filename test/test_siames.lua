@@ -6,7 +6,9 @@ opt.rnn_size = 512
 opt.image_l1_size = 2048
 opt.image_l2_size = 1024
 opt.vocab_size = 10
-opt.similarity = 'dot'
+opt.score_type = 'dot'
+opt.visnet_type = 'rt'
+opt.lang_embed_type = 'rnn'
 
 sentence = torch.LongTensor({{11,1,2,3,4,5,6,7,12}})
 length = torch.LongTensor({9})
@@ -34,4 +36,6 @@ net:float()
 
 scores = net:forward(inputs)
 net:backward(inputs, scores)
-print(123)
+
+net:evaluate()
+print(net:findModules('BiDynamicRNN')[1].train)

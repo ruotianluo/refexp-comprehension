@@ -4,6 +4,7 @@ require 'rnn'
 require 'cbp'
 local net_utils = require 'misc.net_utils'
 require 'nngraph'
+require 'misc.CNN'
 
 nn.FastLSTM.usenngraph = true
 
@@ -48,7 +49,15 @@ function SimNet:__init(opt)
 
   self.language_net = nn.Sequential():add(nn.ParallelTable())
   self.language_net:get(1):add(nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))):add(nn.Identity())
-  self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
+  if opt.lang_embed_type == 'rnn' then
+    self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
+  elseif opt.lang_embed_type == 'cnn' then
+    self.language_net:add(WordCNN(self.rnn_size, self.rnn_size * 2))
+  elseif opt.lang_embed_type == 'cnnhybrid' then
+    self.language_net:add(WordHybridCNN(self.rnn_size, self.rnn_size * 2, nil, opt))
+  end
+
+  -- self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
   -- self.language_net:add(nn.BatchNormalization(self.rnn_size * 2))
 
   if opt.normalize == 1 then
@@ -62,6 +71,9 @@ function SimNet:__init(opt)
   self.net:get(1):add(self.vis_net):add(self.language_net)
 
   self.net:add(self.sim_net)
+  
+  self.module = self.net
+  self.modules = {self.net}
 end
 
 function SimNet:setBatchSize(batch_size)
@@ -78,6 +90,12 @@ end
 function SimNet:evaluate()
   parent.evaluate(self)
   self.net:evaluate()
+  for k, v in pairs(self.net:findModules('BiDynamicRNN')) do
+    v:training()
+  end
+  for k, v in pairs(self.net:findModules('nn.Sequencer')) do
+    v:training()
+  end
 end
 
 function SimNet:parameters()

@@ -17,6 +17,7 @@ maxIter = 100
 sharedLookupTable = nn.LookupTableMaskZero(nIndex, hiddenSize)
 
 brnn = BiDynamicRNN(nn.FastLSTM(hiddenSize, hiddenSize), nn.FastLSTM(hiddenSize, hiddenSize), true, 'avg')
+-- brnn:evaluate()
 
 lookup = nn.Sequencer(sharedLookupTable)
 
