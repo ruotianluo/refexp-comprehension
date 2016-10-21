@@ -1,14 +1,14 @@
 import gensim
 import numpy as np
+import h5py
 
-model = gensim.models.Word2Vec.load_word2vec_format('GoogleNews-vectors-negative300.bin.gz', binary=True)
+model = gensim.models.Word2Vec.load_word2vec_format('../../model/GoogleNews-vectors-negative300.bin.gz', binary=True)
 
-vocab = open('xxx/vocabulary.txt','r').readlines() + ['bos', '</s>']:
-
+vocab = open('data/vocabulary.txt','r').readlines() + ['</s>']
 
 unk = np.mean(model.syn0, 0)
 
-result = np.zeros(len(vocab), )
+result = np.zeros((len(vocab), 300))
 for i in range(len(vocab)):
 	if vocab[i].strip() in model:
 		result[i,:] = model[vocab[i].strip()]
@@ -16,5 +16,8 @@ for i in range(len(vocab)):
 		print vocab[i].strip()
 		result[i, :] = unk
 
-np.save('w2v.npy',result)
+filename = 'data/w2v.h5'
+f = h5py.File(filename)
+f.create_dataset("w2v", dtype='float32', data=result)
+f.close()
 
