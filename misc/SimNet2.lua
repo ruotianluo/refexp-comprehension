@@ -59,7 +59,7 @@ function SimNet:__init(opt)
 
   self.language_net:get(1):add(nn.Sequencer(self.lookup)):add(nn.Identity())
   if opt.lang_embed_type == 'rnn' then
-    self.language_net:add(nn.DynamicRNN(nn.FastLSTM, {state_type = opt.state_type, input_size = opt.word_embedding_size, hidden_size = self.rnn_size, layer_num = opt.layer_num}))
+    self.language_net:add(nn.DynamicRNN(nn.FastLSTM, {state_type = opt.state_type, input_size = self.word_embedding_size, hidden_size = self.rnn_size, layer_num = opt.layer_num}))
   elseif opt.lang_embed_type == 'cnn' then
     self.language_net:add(WordCNN(self.word_embedding_size, self.rnn_size * 2))
   elseif opt.lang_embed_type == 'cnnhybrid' then
@@ -84,9 +84,9 @@ end
 
 function SimNet:loadW2V(lookup)
   require 'hdf5'
-  w2v = hdf5.open('w2v.h5', 'r')
+  w2v = hdf5.open('data/w2v.h5', 'r')
   w2v = w2v:read('/w2v'):all()
-  lookup.weight[{{2,-2}}]:copy(w2v)
+  lookup.weight[{{2,-1}}]:copy(w2v)
 end
 
 function SimNet:setBatchSize(batch_size)

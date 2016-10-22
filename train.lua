@@ -10,8 +10,8 @@ require 'nngraph'
 require 'misc.optim_updates'
 require 'nn'
 require 'misc.SimNet2'
-require 'misc.SimNet'
 require 'misc.Reader'
+require 'misc.BOW_MLP'
 
 local DataLoader = require 'dataloader'
 local utils = require 'misc.utils'
@@ -84,8 +84,10 @@ else
   protos = {}
   if opt.simnet_type == 'simnet' then
     protos.net = SimNet(opt)
-  else
+  elseif opt.simnet_type == 'reader' then
     protos.net = Reader(opt)
+  elseif opt.simnet_type == 'bow' then
+    protos.net = BOW_MLP(opt)
   end
   protos.crit = build_crit(opt)
 end
