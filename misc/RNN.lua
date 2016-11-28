@@ -1,9 +1,11 @@
 require 'nn'
 require 'rnn'
+require 'torchx'
+local utils = require 'misc.utils'
 
-local BiDynamicRNN, parent = torch.class('BiDynamicRNN', 'nn.Module')
+local DynamicRNN, parent = torch.class('nn.DynamicRNN', 'nn.Module')
 
-function BiDynamicRNN:__init(cell_fw, cell_bw, time_major, state_type)
+function DynamicRNN:__init(cell, opt)
 --[[
 """Creates a dynamic version of bidirectional recurrent neural network.
   Similar to the unidirectional case above (rnn) but takes input and builds
@@ -48,70 +50,107 @@ function BiDynamicRNN:__init(cell_fw, cell_bw, time_major, state_type)
     TypeError: If `cell_fw` or `cell_bw` is not an instance of `RNNCell`.
   """
 ]]--
-	-- forward rnn
-  self.time_major = time_major or false
-  self.state_type = state_type or 'final'
+  -- forward rnn
+  self.dropout = utils.getopt(opt, 'dropout', 0.2)
+  self.time_major = utils.getopt(opt, 'time_major', 0)
+  self.state_type = utils.getopt(opt, 'state_type', 'avg')
+  self.layer_num = utils.getopt(opt, 'layer_num', 1)
+  self.input_size = utils.getopt(opt, 'input_size', 512)
+  self.hidden_size = utils.getopt(opt, 'hidden_size', 512)
+  self.bidirectional = utils.getopt(opt, 'bidirectional', 1)
+  -- self.output_size = utils.getopt(opt, 'output_size', 512)
 
-  local fwd = nn.Sequential()
-    --:add(nn.SplitTable(1))
-    :add(cell_fw:maskZero(1))
+  local rnn = nn.Sequential()
 
-  -- internally, rnn will be wrapped into a Recursor to make it an AbstractRecurrent instance.
-  fwdSeq = nn.Sequencer(fwd)
+  rnn:add(nn.SplitTable(1))
 
-  -- backward rnn (will be applied in reverse order of input sequence)
-  local bwd = nn.Sequential()
-    --:add(nn.SplitTable(1))
-    :add(cell_bw:maskZero(1))
-  bwdSeq = nn.Sequencer(bwd)
-
-  -- merges the output of one time-step of fwd and bwd rnns.
-  -- You could also try nn.AddTable(), nn.Identity(), etc.
-  local merge = nn.JoinTable(1, 1)
-  mergeSeq = nn.Sequencer(merge)
-
-  -- Assume that two input sequences are given (original and reverse, both are right-padded).
-  -- Instead of ConcatTable, we use ParallelTable here.
-  local parallel = nn.ParallelTable()
-  parallel:add(fwdSeq):add(bwdSeq)
-  local brnn = nn.Sequential()
-    :add(parallel)
-    --:add(nn.ZipTable())
-    --:add(mergeSeq)
-    --:add(nn.Sequencer(nn.Unsqueeze(1)))
-    --:add(nn.JoinTable(1))
-    :add(nn.JoinTable(3))
-
-  self.brnn = brnn
+  for i = 1, self.layer_num do
+    if self.bidirectional == 1 then
+      if i == 1 then
+        rnn:add(nn.BiSequencer(cell(self.input_size, self.hidden_size):remember('both'):maskZero(1)))
+      else
+        rnn:add(nn.BiSequencer(cell(self.hidden_size, self.hidden_size):remember('both'):maskZero(1)))
+      end
+      if i < self.layer_num then
+        local nonlinear = nn.Sequential()
+        nonlinear:add(nn.Linear(self.hidden_size * 2, self.hidden_size))
+        nonlinear:add(nn.ReLU())
+        -- nonlinear:add(nn.Sigmoid())
+        rnn:add(nn.Sequencer(nn.MaskZero(nonlinear, 1)))
+      end
+    else
+      rnn:add(nn.Sequencer(cell(self.input_size, self.hidden_size):remember('both'):maskZero(1)))
+    end
+    if i < self.layer_num then
+      rnn:add(nn.Sequencer(nn.Dropout(self.dropout)))
+    end
+  end
+  rnn:add(nn.Sequencer(nn.Unsqueeze(1)))
+  rnn:add(nn.JoinTable(1))
+  self.rnn = rnn
+  
+  self.module = self.rnn
+  self.modules = {self.rnn}
 end
 
-function BiDynamicRNN:training()
+function DynamicRNN:training()
   parent.training(self)
-  self.brnn:training()
+  self.rnn:training()
+  for k,v in pairs(self.rnn:findModules('nn.Dropout')) do
+    v.p = self.dropout
+  end
 end
 
-function BiDynamicRNN:evaluate()
+function DynamicRNN:evaluate()
   parent.evaluate(self)
-  self.brnn:evaluate()
+  self.rnn:evaluate()
+  for k,v in pairs(self.rnn:findModules('nn.Sequencer')) do
+    v:training()
+  end
+  for k,v in pairs(self.rnn:findModules('nn.Dropout')) do
+    v.p = 0
+  end
 end
 
-function BiDynamicRNN:clearState()
-  self.brnn:clearState()
+function DynamicRNN:clearState()
+  self.rnn:clearState()
 end
 
-function BiDynamicRNN:parameters()
-  return self.brnn:parameters()
+function DynamicRNN:parameters()
+  return self.rnn:parameters()
 end
 
-function BiDynamicRNN:updateOutput(inputs)
+function DynamicRNN:getSeqLength(input)
+  local seq_len
+  local feat_norm
+  if self.time_major == 1 then
+    seq_len = torch.LongTensor(input:size(2))
+    feat_norm = torch.norm(input, 2, 3):squeeze(3):t() -- make it batch major
+  else
+    seq_len = torch.LongTensor(input:size(1))
+    feat_norm = torch.norm(input, 2, 3):squeeze(3)
+  end
+  for i = 1, seq_len:size(1) do
+    seq_len[i] = torch.find(feat_norm[i], 0)[1] or (feat_norm:size(2) + 1)
+  end
+  seq_len:add(-1)
+  return seq_len
+end
+
+function DynamicRNN:updateOutput(inputs)
 --[[
 inputs: a table; inputs[1] is batch_size * max_length * size or max_length * batch_size * size
 inputs[2] is sequence length, including the length of each sequence
 ]]--
+  if torch.type(inputs) ~= 'table' then
+    inputs = {inputs}
+    inputs[2] = self:getSeqLength(inputs[1])
+  end
   local sequence_length = inputs[2]
+  self.sequence_length = sequence_length
   local max_length = torch.max(sequence_length)
 
-  if self.time_major then
+  if self.time_major == 1 then
     self.rnn_inputs = inputs[1][{{1, max_length}}]
   else
     self.rnn_inputs = inputs[1][{{},{1, max_length}}]:transpose(1, 2):contiguous()
@@ -126,19 +165,19 @@ inputs[2] is sequence length, including the length of each sequence
     end
   end
 
-  -- Generate the inversenet
-  self.rnn_inputs_rev = self.rnn_inputs.new(#self.rnn_inputs):zero()
-  for i = 1, batch_size do
-    for k = 1, sequence_length[i] do
-      self.rnn_inputs_rev[k][i]:copy(self.rnn_inputs[sequence_length[i] - k + 1][i])
-    end
-  end
-  local outputs = self.brnn:forward({self.rnn_inputs, self.rnn_inputs_rev})
+  local outputs = self.rnn:forward(self.rnn_inputs)
   local output_states
   if self.state_type == 'final' then
     output_states = self.rnn_inputs.new(outputs[1]:size())
-    for i = 1, batch_size do
-      output_states[i]:copy(outputs[sequence_length[i]][i])
+    if self.bidirectional == 1 then
+      for i = 1, batch_size do
+        output_states[{i, {1, outputs:size(3)/2}}]:copy(outputs[{sequence_length[i], i, {1, outputs:size(3)/2}}])
+      end
+      output_states[{{}, {outputs:size(3)/2 + 1, -1}}]:copy(outputs[{1, {}, {outputs:size(3)/2 + 1, -1}}])
+    else
+      for i = 1, batch_size do
+        output_states[i]:copy(outputs[sequence_length[i]][i])
+      end
     end
   else
     output_states = torch.sum(outputs, 1):squeeze(1)
@@ -148,8 +187,14 @@ inputs[2] is sequence length, including the length of each sequence
   return self.output
 end
 
-function BiDynamicRNN:updateGradInput(inputs, gradOutput)
-  local sequence_length = inputs[2]
+function DynamicRNN:updateGradInput(inputs, gradOutput)
+  local single_input = false -- Whether the inputs is a tensor or a table
+  if torch.type(inputs) ~= 'table' then
+    inputs = {inputs}
+    inputs[2] = self.sequence_length
+    single_input = true
+  end
+  local sequence_length = self.sequence_length
   local batch_size = self.rnn_inputs:size(2)
 
   self.gradInput = {inputs[1].new(#inputs[1]):zero(), {}}
@@ -157,39 +202,38 @@ function BiDynamicRNN:updateGradInput(inputs, gradOutput)
   local max_length = torch.max(sequence_length)
 
   local output_feat_size = gradOutput:size(2)
-  local brnn_grad_output
+  local rnn_grad_output
   if self.state_type == 'final' then
-    brnn_grad_output = gradOutput.new(max_length, batch_size, output_feat_size):zero()
+    rnn_grad_output = gradOutput.new(max_length, batch_size, output_feat_size):zero()
     for i = 1, batch_size do
-      brnn_grad_output[sequence_length[i]][i]:copy(gradOutput[i])
+      rnn_grad_output[sequence_length[i]][i][{{1, output_feat_size / 2}}]:copy(gradOutput[i][{{1, output_feat_size / 2}}])
     end
+    rnn_grad_output[1][{{}, {output_feat_size / 2 + 1, -1}}]:copy(gradOutput[{{}, {output_feat_size / 2 + 1, -1}}])
   else
-    brnn_grad_output = torch.cdiv(gradOutput, sequence_length:typeAs(gradOutput):view(-1, 1):expandAs(gradOutput))
-    brnn_grad_output = brnn_grad_output:view(1, batch_size, output_feat_size):expand(max_length, batch_size, output_feat_size)
+    rnn_grad_output = torch.cdiv(gradOutput, sequence_length:typeAs(gradOutput):view(-1, 1):expandAs(gradOutput))
+    rnn_grad_output = rnn_grad_output:view(1, batch_size, output_feat_size):expand(max_length, batch_size, output_feat_size)
   end
-  local brnn_grad_input = self.brnn:backward({self.rnn_inputs, self.rnn_inputs_rev}, brnn_grad_output)
+  local rnn_grad_input = self.rnn:backward(self.rnn_inputs, rnn_grad_output)
 
-  for i = 1, batch_size do
-    for k = 1, sequence_length[i] do
-      brnn_grad_input[1][k][i]:add(brnn_grad_input[2][sequence_length[i] - k + 1][i])
-    end
-  end
-
-  brnn_grad_input = brnn_grad_input[1]
-
-  if self.time_major then
-    self.gradInput[1][{{1, max_length}}]:copy(brnn_grad_input)
+  if self.time_major == 1 then
+    self.gradInput[1][{{1, max_length}}]:copy(rnn_grad_input)
   else
-    self.gradInput[1][{{},{1, max_length}}]:copy(brnn_grad_input:transpose(1, 2))
+    self.gradInput[1][{{},{1, max_length}}]:copy(rnn_grad_input:transpose(1, 2))
+  end
+
+  if single_input then
+    self.gradInput = self.gradInput[1]
   end
 
   return self.gradInput
 end
 
-function BiDynamicRNN:clearState()
+function DynamicRNN:clearState()
   self.rnn_inputs = nil
   self.rnn_inputs_rev = nil
   self.gradInput = nil
-  self.brnn:clearState()
+  self.sequence_length = nil
+  self.rnn:clearState()
   return parent.clearState(self)
 end
+

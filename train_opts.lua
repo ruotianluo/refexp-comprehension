@@ -19,20 +19,22 @@ function M.parse(arg)
   cmd:option('-rnn_size',512,'size of the rnn in number of hidden nodes in each layer')
   cmd:option('-image_l1_size',1024,'the encoding size of each token in the vocabulary, and the image.')
   cmd:option('-image_l2_size',1024,'the encoding size of each token in the vocabulary, and the image.')
+  -- Choose model
+  cmd:option('-simnet_type','simnet','simnet, reader, bow')
   cmd:option('-score_type','dot','dot, concat, euclidean, cosine, cbp, mlp')
   cmd:option('-loss_type','structure','structure, softmax, softmax2, logsitic, hinge.')
-  cmd:option('-visnet_type','old','rt, lc, old.')
   cmd:option('-lang_embed_type', 'rnn', 'cnn, cnnhybrid, rnn')
-  cmd:option('-layer_num', 1)
-  cmd:option('-word2vec', 0)
-  cmd:option('-simnet_type','simnet','simnet, reader, bow')
-  cmd:option('-state_type', 'final', 'avg, final')
+  cmd:option('-visnet_type','old','rt, lc, old.')
   cmd:option('-drop_prob_vis', 0., 'strength of dropout in the visnet')
-  cmd:option('-slack_rescaled',0,'Rescaled slack or not.')
   cmd:option('-normalize',0,'Normalize the feature or not.')
+  -- LSTM
+  cmd:option('-layer_num', 1, 'The layer num of LSTM') 
+  cmd:option('-state_type', 'final', 'avg, final; Use the average of hidden vector of LSTM or the final state')
+  cmd:option('-word2vec', 0, 'If initialize fro word2vec')
+  -- Crit choose
+  cmd:option('-use_context', 1, 'use context or not')
+  cmd:option('-slack_rescaled',0,'Rescaled slack or not. Used in structure loss')
   cmd:option('-margin',1,'The margin of hinge loss.')
-
-
   -- Optimization: General
   cmd:option('-max_iters', -1, 'max number of iterations to run for (-1 = run forever)')
   --cmd:option('-batch_size',16,'what is the batch size in number of images per batch? (there will be x seq_per_img sentences)')
@@ -57,6 +59,7 @@ function M.parse(arg)
 
 
   -- misc
+  cmd:option('-vgg_path', '', 'The path of pretrained vgg: used in visnet lc')
   cmd:option('-backend', 'cudnn', 'nn|cudnn')
   cmd:option('-id', '', 'an id identifying this run/job. used in cross-val and appended when writing progress files')
   cmd:option('-seed', 123, 'random number generator seed to use')

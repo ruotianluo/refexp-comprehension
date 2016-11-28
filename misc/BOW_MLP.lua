@@ -1,4 +1,4 @@
-require 'misc.RNN2'
+require 'misc.RNN'
 require 'nn'
 require 'rnn'
 require 'cbp'

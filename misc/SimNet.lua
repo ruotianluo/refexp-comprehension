@@ -14,31 +14,15 @@ function SimNet:__init(opt)
 
   self.vocab_size = opt.vocab_size
   self.rnn_size = opt.rnn_size
+  self.word_embedding_size = opt.word_embedding_size
   self.image_l1_size = opt.image_l1_size
   self.image_l2_size = opt.image_l2_size
   self.score_type = opt.score_type
 
   self.net = nn.Sequential()
 
-  --[[self.vis_net = nn.Sequential():add(nn.ParallelTable())
-  self.vis_net:get(1):add(nn.Sequential()
-    :add(nn.Linear(4096, self.image_l1_size))
-    :add(nn.ReLU()))
-    --:add(nn.BatchNormalization(self.image_l1_size)))
-  self.vis_net:get(1):add(
-    nn.Sequential():add(nn.Linear(4096, self.image_l1_size))
-      :add(nn.ReLU())
-      --:add(nn.BatchNormalization(self.image_l1_size))
-      :add(nn.Replicate(101))
-      :add(nn.Squeeze(2)))
-  
-  self.vis_net:get(1):add(nn.BatchNormalization(8))
-  self.vis_net:add(nn.JoinTable(1,1))
-  self.vis_net
-    :add(nn.Linear(self.image_l1_size*2+8,self.image_l2_size))
-    :add(nn.ReLU())
-    :add(nn.BatchNormalization(self.image_l2_size))
-  ]]--
+  -- Visual embedding
+  -- Different ways of embedding, both rt and lc works. lc needs pretrained VGG model
   if opt.visnet_type == 'rt' then
     self.vis_net = net_utils.build_visnet_rt(opt)
   elseif opt.visnet_type == 'lc' then
@@ -47,35 +31,57 @@ function SimNet:__init(opt)
     self.vis_net = net_utils.build_visnet_old(opt)  
   end
 
+  -- Text embedding
   self.language_net = nn.Sequential():add(nn.ParallelTable())
-  self.language_net:get(1):add(nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))):add(nn.Identity())
-  if opt.lang_embed_type == 'rnn' then
-    self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
-  elseif opt.lang_embed_type == 'cnn' then
-    self.language_net:add(WordCNN(self.rnn_size, self.rnn_size * 2))
-  elseif opt.lang_embed_type == 'cnnhybrid' then
-    self.language_net:add(WordHybridCNN(self.rnn_size, self.rnn_size * 2, nil, opt))
+
+  -- Add the embedding layer
+  if opt.word2vec == 1 then
+    -- Force the embedding size to be 300 because of word2vec
+    self.word_embedding_size = 300
+    self.lookup = nn.LookupTableMaskZero(self.vocab_size + 2, self.word_embedding_size)
+    self:loadW2V(self.lookup)
+  else
+    self.lookup = nn.LookupTableMaskZero(self.vocab_size + 2, self.word_embedding_size)
   end
 
-  -- self.language_net:add(BiDynamicRNN(nn.FastLSTM(self.rnn_size, self.rnn_size), nn.FastLSTM(self.rnn_size, self.rnn_size), nil, opt.state_type))
-  -- self.language_net:add(nn.BatchNormalization(self.rnn_size * 2))
+  self.language_net:get(1):add(nn.Sequencer(self.lookup)):add(nn.Identity())
+  if opt.lang_embed_type == 'rnn' then
+    self.language_net:add(nn.DynamicRNN(nn.FastLSTM, {state_type = opt.state_type, input_size = self.word_embedding_size, hidden_size = self.rnn_size, layer_num = opt.layer_num}))
+  elseif opt.lang_embed_type == 'cnn' then
+    self.language_net:add(WordCNN(self.word_embedding_size, self.rnn_size * 2))
+  elseif opt.lang_embed_type == 'cnnhybrid' then
+    self.language_net:add(WordHybridCNN(self.word_embedding_size, self.rnn_size * 2, nil, opt))
+  end
 
+  -- Add normalization layer or not
+  -- (Normalization sometimes help, it depends)
   if opt.normalize == 1 then
     self.vis_net:add(nn.Normalize(2))
     self.language_net:add(nn.Normalize(2))
   end
 
+  -- Sim_net compute the similarity
+  -- input[1] is the feature of all the regions, Nxd1 matrix
+  -- input[2] is the query feature, 1xd2 matrix
   self.sim_net = self._build_sim_net(opt)
 
   self.net:add(nn.ParallelTable())
   self.net:get(1):add(self.vis_net):add(self.language_net)
 
   self.net:add(self.sim_net)
-  
-  self.module = self.net
-  self.modules = {self.net}
 end
 
+function SimNet:loadW2V(lookup)
+  require 'hdf5'
+  -- Currently manually locate the word2vec file
+  w2v = hdf5.open('data/w2v.h5', 'r')
+  w2v = w2v:read('/w2v'):all()
+  -- The index starts from 2 because the first row of LookupMaskZero is all zero vector.
+  lookup.weight[{{2,-1}}]:copy(w2v)
+end
+
+-- Batch size here means the number of regions
+-- In this case, batch_size will always be 100
 function SimNet:setBatchSize(batch_size)
   for k, v in pairs(self.net:findModules('nn.Replicate')) do
     v.nfeatures = batch_size
@@ -90,12 +96,6 @@ end
 function SimNet:evaluate()
   parent.evaluate(self)
   self.net:evaluate()
-  for k, v in pairs(self.net:findModules('BiDynamicRNN')) do
-    v:training()
-  end
-  for k, v in pairs(self.net:findModules('nn.Sequencer')) do
-    v:training()
-  end
 end
 
 function SimNet:parameters()
@@ -107,6 +107,10 @@ function SimNet:clearState()
   return parent.clearState(self)
 end
 
+-- Build similarity network, provides multiple methods
+-- Dot works well, concat works a little worse.
+-- For euclidean, cosine, cbp, I just don't use them after some point. 
+-- For elementwise and order embedding, I haven't tried at all.
 function SimNet:_build_sim_net()
   if self.score_type == 'dot' then
     assert(self.image_l2_size==self.rnn_size*2, 'The image feature and text feature has different dimension')
@@ -129,7 +133,8 @@ function SimNet:_build_sim_net()
     local score = nn.Squeeze(2)(nn.Linear(self.rnn_size*2, 1)(feat))
     score = nn.Squeeze()(score)
     return nn.gModule(inputs, {score})  
-  elseif self.score_type == 'euclidean' or self.score_type == 'cosine' or self.score_type == 'cbp' or self.score_type == 'ord_embed' then
+  elseif self.score_type == 'euclidean' or self.score_type == 'cosine' or self.score_type == 'cbp' or self.score_type == 'ord_embed'
+     or self.score_type == 'elementwise' then
     local inputs = {}
     table.insert(inputs, nn.Identity()())
     table.insert(inputs, nn.Identity()())
@@ -155,6 +160,8 @@ function SimNet:_build_sim_net()
       score = nn.ReLU()(score)
       score = nn.Square()(score)
       score = nn.Sum(1,1)(score)
+    elseif self.score_type == 'elementwise' then
+      score = nn.Linear(self.rnn_size * 2, 1)(nn.CMulTable({vis_fat, text_feat}))
     end
     score = nn.Squeeze()(score)
     return nn.gModule(inputs, {score})
@@ -172,6 +179,9 @@ function SimNet:updateGradInput(inputs, gradOutput)
   return self.gradInput
 end
 
+
+-- Structure loss:
+-- Never used it any more.
 local struc_crit, parent = torch.class('SturctureCriterion', 'nn.Criterion')
 function struc_crit:__init(opt)
   self.slack_rescaled = opt.slack_rescaled
@@ -204,6 +214,8 @@ function struc_crit:updateGradInput(input, iou)
   return self.gradInput
 end
 
+-- Hinge loss
+-- or max-margin loss
 local hinge_crit, parent = torch.class('HingeCriterion', 'nn.Criterion')
 function hinge_crit:__init(opt)
   self.margin = opt.margin
@@ -236,7 +248,11 @@ function hinge_crit:updateGradInput(input, iou)
   return self.gradInput
 end
 
--- weighted
+-- weighted sum log probability
+-- Note that it's different from sum reader
+-- We are minimizing sum of log probabilities;
+-- min - \sum_{region i is a hit} log p(i) * iou[i]
+-- It is to say, I want the probabiity of all the "correct" regions to be higher
 local softmax_crit, parent = torch.class('SoftmaxCriterion', 'nn.Criterion')
 function softmax_crit:__init()
   self.log_softmax =  nn.LogSoftMax()
@@ -257,6 +273,7 @@ function softmax_crit:updateGradInput(input, iou)
   return self.gradInput
 end
 
+-- without weights
 local softmax2_crit, parent = torch.class('Softmax2Criterion', 'nn.Criterion')
 function softmax2_crit:__init()
   self.log_softmax =  nn.LogSoftMax()

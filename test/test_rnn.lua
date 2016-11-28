@@ -17,7 +17,7 @@ maxIter = 100
 sharedLookupTable = nn.LookupTableMaskZero(nIndex, hiddenSize)
 
 rnn_opt = {state_type = 'avg', time_major = 1, input_size = hiddenSize,
-  hidden_size = hiddenSize, layer_num = 2}
+  hidden_size = hiddenSize, layer_num = 1}
 brnn = nn.DynamicRNN(nn.FastLSTM, rnn_opt)
 -- brnn:evaluate()
 -- print(brnn.rnn)

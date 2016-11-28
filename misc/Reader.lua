@@ -32,7 +32,8 @@ function Reader:__init(opt)
   self.embed_net = nn.Sequencer(nn.LookupTableMaskZero(self.vocab_size + 2, self.rnn_size))
 
   self.joint_net = nn.Sequential()
-  self.joint_net:add(BiDynamicRNN(nn.FastLSTM(self.image_l2_size + self.rnn_size, self.rnn_size), nn.FastLSTM(self.image_l2_size + self.rnn_size, self.rnn_size), nil, opt.state_type))
+  
+  self.joint_net:add(nn.DynamicRNN(nn.FastLSTM, {state_type = opt.state_type, input_size = self.image_l2_size + self.rnn_size, hidden_size = self.rnn_size, layer_num = opt.layer_num}))
   self.joint_net:add(nn.Linear(self.rnn_size * 2, self.rnn_size))
   self.joint_net:add(nn.ReLU())
   self.joint_net:add(nn.Linear(self.rnn_size, 1))

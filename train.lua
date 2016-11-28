@@ -9,7 +9,7 @@ require 'torch'
 require 'nngraph'
 require 'misc.optim_updates'
 require 'nn'
-require 'misc.SimNet2'
+require 'misc.SimNet'
 require 'misc.Reader'
 require 'misc.BOW_MLP'
 
@@ -48,6 +48,7 @@ local epoch = 1
 local optim_state = {}
 local best_val_score
 
+-- The different criterion to choose.
 function build_crit(opt)
   if opt.loss_type == 'structure' then
     return SturctureCriterion(opt)
@@ -82,11 +83,11 @@ else
   -- create protos from scratch
   -- intialize language model
   protos = {}
-  if opt.simnet_type == 'simnet' then
+  if opt.simnet_type == 'simnet' then -- Simlarity network
     protos.net = SimNet(opt)
-  elseif opt.simnet_type == 'reader' then
+  elseif opt.simnet_type == 'reader' then -- Reader module, doesn't work well
     protos.net = Reader(opt)
-  elseif opt.simnet_type == 'bow' then
+  elseif opt.simnet_type == 'bow' then -- Bag of words, works as baseline
     protos.net = BOW_MLP(opt)
   end
   protos.crit = build_crit(opt)
@@ -123,6 +124,10 @@ local function eval_split(eval_set, evalopt)
   local topK_correct_boxes = 0
   local total_num = 0
 
+  -- To look at GT performance:
+  -- Specifally, if GT has the hightest similarity, GT is regarded as correct
+  local correct_GT = 0
+
   for n, data in eval_set:run() do
 
     if opt.gpuid >= 0 then
@@ -136,14 +141,29 @@ local function eval_split(eval_set, evalopt)
     end
 
     -- fetch a batch of data
-    local inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+    local inputs
+    if opt.use_context == 1 then
+      inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+    else
+      inputs = {{data.fc7_local, data.bbox_coordinate},{data.sentence, data.length}}
+    end
     local scores = protos.net:forward(inputs)
     local loss = protos.crit:forward(scores, data.iou)
 
+    -- To look at GT performance
+    local GT_scores = scores[1]
+
+    -- The scores and ious of proposals
     scores = scores[{{2,-1}}]:float()
     local IoUs = data['iou'][{{2, -1}}]:float()
     -- Evaluate the correctness of top K predictions
     _, topK_ids = torch.sort(-scores)
+
+    -- If GT has the highest 
+    if scores[topK_ids[1]] < GT_scores then
+      correct_GT = correct_GT + 1
+    end
+
     topK_IoUs = IoUs:index(1, topK_ids[{{1, K}}])
     -- whether the K-th (ranking from high to low) candidate is correct
     topK_is_correct = torch.ge(topK_IoUs, 0.5):float()
@@ -164,8 +184,14 @@ local function eval_split(eval_set, evalopt)
     if val_images_use ~= -1 and n >= val_images_use then break end -- we've used enough images
   end
 
-  local val_result = {recall_1 = topK_correct_num[1]/total_num, recall_10 = topK_correct_num[10]/total_num}
+  local val_result = {recall_1 = topK_correct_num[1]/total_num, 
+                      recall_5 = topK_correct_num[5]/total_num,
+                      recall_20 = topK_correct_num[20]/total_num,
+                      recall_10 = topK_correct_num[10]/total_num}
   print(val_result)
+  -- To look at GT performance
+  print('GT result: ' .. correct_GT / total_num) -- Ratio of gt to have the higest similarity
+  eval_set:resetThreads()
   print('Average true proposals:')
   print(topK_correct_boxes/total_num)
   eval_set:resetThreads()
@@ -176,6 +202,9 @@ end
 -------------------------------------------------------------------------------
 -- Loss function
 -------------------------------------------------------------------------------
+-- Running GT accuracy
+local GT_acc = 0
+
 local function lossFun(data)
   grad_params:zero()
   protos.net:training()
@@ -190,7 +219,11 @@ local function lossFun(data)
   end
 
   -- Fetch data using the loader
-  local inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+  if opt.use_context == 1 then
+    inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+  else
+    inputs = {{data.fc7_local, data.bbox_coordinate},{data.sentence, data.length}}
+  end
   --if opt.gpuid >= 0 then
     --nn.utils.recursiveType(inputs, 'torch.CudaTensor')
     --for k, v in pairs(data) do
@@ -199,8 +232,19 @@ local function lossFun(data)
   --end
   local loss
   
+  -- Forward backward time
   local fb_time = utils.timeit(function()
     local scores = protos.net:forward(inputs)
+
+    -- scores[1] is the score of the ground truth region
+    -- if scores[1] is the largest
+    if torch.sum(torch.gt(scores - scores[1], 0):float()) == 0 then
+      GT_acc = 0.01 + 0.99 * GT_acc
+    else
+      GT_acc = 0.99 * GT_acc
+    end
+    print('GT acc: ' .. GT_acc)
+    
     loss = protos.crit:forward(scores, data.iou)
     -- backward path
     local dscores = protos.crit:backward(scores, data.iou)
@@ -293,6 +337,11 @@ while true do
 
     -- decay the learning rate for both LM and CNN
     local learning_rate = opt.learning_rate
+    if iter > opt.learning_rate_decay_start and opt.learning_rate_decay_start >= 0 then
+      local frac = math.floor((iter - opt.learning_rate_decay_start) / opt.learning_rate_decay_every)
+      local decay_factor = math.pow(0.1, frac)
+      learning_rate = learning_rate * decay_factor
+    end
 
     -- perform a parameter update
     if opt.optim == 'rmsprop' then

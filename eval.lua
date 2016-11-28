@@ -52,6 +52,7 @@ if string.len(opt.checkpoint_start_from) > 0 then
   -- load protos from file
   print('initializing training information from ' .. opt.checkpoint_start_from)
   local loaded_checkpoint = torch.load(opt.checkpoint_start_from)
+  saved_opt = loaded_checkpoint.opt
   protos = loaded_checkpoint.protos
 
   if opt.loss_type == 'structure' then
@@ -112,6 +113,9 @@ local function eval_split(eval_set, evalopt)
   local topK_correct_num = torch.zeros(K)
   local total_num = 0
 
+  -- To look at GT performance
+  local correct_GT = 0
+
   for n, data in eval_set:run() do
 
     if opt.gpuid >= 0 then
@@ -124,15 +128,30 @@ local function eval_split(eval_set, evalopt)
       end
     end
 
+    local inputs
     -- fetch a batch of data
-    local inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+    if saved_opt.use_context == 1 then
+      inputs = {{data.fc7_local, data.fc7_context, data.bbox_coordinate},{data.sentence, data.length}}
+    else
+      inputs = {{data.fc7_local, data.bbox_coordinate},{data.sentence, data.length}}
+    end
     local scores = protos.net:forward(inputs)
     local loss = protos.crit:forward(scores, data.iou)
+
+    -- To look at GT performance
+    local GT_scores = scores[1]
 
     scores = scores[{{2,-1}}]:float()
     local IoUs = data['iou'][{{2, -1}}]:float()
     -- Evaluate the correctness of top K predictions
     _, topK_ids = torch.sort(-scores)
+
+    -- if the largest score for proposals is less than ground truth score
+    if scores[topK_ids[1]] < GT_scores then
+      correct_GT = correct_GT + 1
+    end
+    -- 
+
     topK_IoUs = IoUs:index(1, topK_ids[{{1, K}}])
     -- whether the K-th (ranking from high to low) candidate is correct
     topK_is_correct = torch.ge(topK_IoUs, 0.5):float()
@@ -156,8 +175,13 @@ local function eval_split(eval_set, evalopt)
     if val_images_use ~= -1 and n >= val_images_use then break end -- we've used enough images
   end
 
-  local val_result = {recall_1 = topK_correct_num[1]/total_num, recall_10 = topK_correct_num[10]/total_num}
+  local val_result = {recall_1 = topK_correct_num[1]/total_num, 
+                      recall_5 = topK_correct_num[5]/total_num,
+                      recall_20 = topK_correct_num[20]/total_num,
+                      recall_10 = topK_correct_num[10]/total_num}
   print(val_result)
+  -- To look at GT performance
+  print('GT result: ' .. correct_GT / total_num)
   eval_set:resetThreads()
 
   return loss_sum/loss_evals, val_result
