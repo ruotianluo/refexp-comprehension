@@ -9,7 +9,7 @@ require 'torch'
 require 'nngraph'
 require 'misc.optim_updates'
 require 'nn'
-require 'misc.SimNet2'
+require 'misc.SimNet'
 require 'misc.Reader'
 require 'misc.BOW_MLP'
 
